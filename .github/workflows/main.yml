@@ -192,11 +192,12 @@ jobs:
           key: pmos-bacon-${{ github.run_id }}
 
 
-      
-       - name: Upload to release
-         uses: softprops/action-gh-release@v2
-         with:
-           tag_name: bacon-pmos-${{ github.run_number }}
-           files: bacon-pmos.tar.gz
-         env:
-           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 如果 artifact 超限，把上面 Upload artifact 换成本步骤
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bacon-pmos-${{ github.run_number }}
+          files: bacon-pmos.tar.gz
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
