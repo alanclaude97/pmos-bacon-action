@@ -126,6 +126,17 @@ jobs:
           pmbootstrap config sudo_timer False
           pmbootstrap status || true
 
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            /home/runner/.local/var/pmbootstrap/cache_ccache_armv7
+            /home/runner/.local/var/pmbootstrap/packages
+          key: pmos-bacon-${{ github.run_id }}
+          restore-keys: |
+            pmos-bacon-
+
       - name: Build image
         env:
           USER_PASSWORD: ${{ github.event.inputs.user_password }}
@@ -147,16 +158,38 @@ jobs:
           set -euxo pipefail
           pmbootstrap export
           mkdir -p out
+          # 关键：pmbootstrap export 生成的是"便利符号链接"，必须用 -L 跟随链接复制真实文件
+          # 否则打进包里的全是悬空链接（指向 runner 上的 /tmp/...），本地解压后 0 数据
           if [ -d /tmp/postmarketOS-export ]; then
-            cp -av /tmp/postmarketOS-export/* out/ 2>/dev/null || true
+            cp -Lrv /tmp/postmarketOS-export/. out/ 2>/dev/null || true
           fi
-          # 兜底：从 work 目录里捞
-          find "$PMB_WORK" -name "boot.img" -exec cp -av {} out/ \; 2>/dev/null || true
-          find "$PMB_WORK" -name "oneplus-bacon.img" -exec cp -av {} out/ \; 2>/dev/null || true
-          find "$PMB_WORK" -name "lk2nd.img" -exec cp -av {} out/ \; 2>/dev/null || true
+          # 兜底：直接从 work 目录复制真实文件（-type f 确保只要实体文件）
+          find "$PMB_WORK" -type f -name "boot.img" -exec cp -Lv {} out/ \; 2>/dev/null || true
+          find "$PMB_WORK" -type f -name "oneplus-bacon.img" -exec cp -Lv {} out/ \; 2>/dev/null || true
+          find "$PMB_WORK" -type f -name "lk2nd.img" -exec cp -Lv {} out/ \; 2>/dev/null || true
+          find "$PMB_WORK" -type f -name "*.dtb" -exec cp -Lv {} out/ \; 2>/dev/null || true
           ls -lh out/
-          tar -czf bacon-pmos.tar.gz -C out .
+          # -h 跟随符号链接打包（双保险）
+          tar -czhf bacon-pmos.tar.gz -C out .
           ls -lh bacon-pmos.tar.gz
+          # 自检：包里不能残留符号链接，否则刷了也是白刷
+          echo "=== 包内符号链接数量（应为 0）==="
+          tar -tvf bacon-pmos.tar.gz | grep -c '^l' || echo "0 个符号链接，正常"
+
+      # 缓存编译产物，下次重跑能省掉大部分编译时间
+      - name: Make cache readable
+        if: always()
+        run: sudo chmod -R a+rX "$PMB_WORK/cache_ccache_armv7" "$PMB_WORK/packages" 2>/dev/null || true
+
+      - name: Save build cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /home/runner/.local/var/pmbootstrap/cache_ccache_armv7
+            /home/runner/.local/var/pmbootstrap/packages
+          key: pmos-bacon-${{ github.run_id }}
 
       # 免费账户 artifact 配额 500MB，镜像大的话改用 Release 上传
       - name: Upload artifact
