@@ -22,13 +22,14 @@ on:
         required: true
         default: "2048"
       pmaports_branch:
-        description: pmaports 分支
+        description: pmaports 分支（只有 main 和 v2x.xx，没有 master）
         required: true
-        default: master
+        default: main
         type: choice
         options:
-          - master
           - main
+          - v25.12
+          - v24.12
 
 jobs:
   build:
@@ -71,8 +72,17 @@ jobs:
 
       - name: Clone pmaports
         run: |
-          git clone --depth=1 --branch=${{ github.event.inputs.pmaports_branch }} \
-            https://gitlab.postmarketos.org/postmarketOS/pmaports.git "$PMAPORTS_DIR"
+          REPO=https://gitlab.postmarketos.org/postmarketOS/pmaports.git
+          DEFAULT_BRANCH=$(git ls-remote --symref "$REPO" HEAD | awk '/^ref:/{print $2}' | sed 's#refs/heads/##')
+          echo "上游默认分支: $DEFAULT_BRANCH"
+          BRANCH="${{ github.event.inputs.pmaports_branch }}"
+          if git clone --depth=1 --branch="$BRANCH" "$REPO" "$PMAPORTS_DIR"; then
+            echo "已克隆分支: $BRANCH"
+          else
+            echo "分支 $BRANCH 不存在，回退到默认分支 $DEFAULT_BRANCH"
+            rm -rf "$PMAPORTS_DIR"
+            git clone --depth=1 --branch="$DEFAULT_BRANCH" "$REPO" "$PMAPORTS_DIR"
+          fi
           git -C "$PMAPORTS_DIR" log -1 --oneline
 
       - name: Preflight (确认 bacon 设备包存在)
