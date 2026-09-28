@@ -17,6 +17,10 @@ on:
           - none
           - phosh
           - sxmo-dewm
+      user_password:
+        description: 设备用户(user)的登录密码
+        required: true
+        default: "147147"
       extra_space:
         description: 镜像额外空间 MB
         required: true
@@ -123,15 +127,20 @@ jobs:
           pmbootstrap status || true
 
       - name: Build image
+        env:
+          USER_PASSWORD: ${{ github.event.inputs.user_password }}
         run: |
-          set -euxo pipefail
-          # 全局选项（-y/-j/-t/--details-to-stdout）必须放在子命令 install 之前
-          pmbootstrap -y -j 2 -t 3600 --details-to-stdout install || {
+          set -eo pipefail
+          # install 会交互式询问用户密码，CI 里 stdin 不是 TTY，getpass 会抛 EOFError
+          # 必须用 --password 显式传入
+          set +x
+          pmbootstrap -y -j 2 -t 3600 --details-to-stdout install --password "$USER_PASSWORD" || {
             echo "=== 构建失败，输出日志尾部 ==="
             df -h
             tail -n 300 "$PMB_WORK/log.txt" || true
             exit 1
           }
+          set -x
 
       - name: Export images
         run: |
