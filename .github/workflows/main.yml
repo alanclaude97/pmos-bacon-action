@@ -115,14 +115,18 @@ jobs:
       - name: Init (non-interactive)
         run: |
           echo "8" > "$PMB_WORK/version" 2>/dev/null || true
-          yes "" | pmbootstrap -y init || true
+          # 不能加 -y：它会把所有问题都回答成 y，覆盖 config 里预设的值（sudo_timer 等）
+          # yes "" 相当于一路回车，全部取默认值
+          yes "" | pmbootstrap init || true
           pmbootstrap config ui ${{ github.event.inputs.ui }}
+          pmbootstrap config sudo_timer False
           pmbootstrap status || true
 
       - name: Build image
         run: |
           set -euxo pipefail
-          pmbootstrap -y -j 2 -t 3600 install --details-to-stdout || {
+          # 全局选项（-y/-j/-t/--details-to-stdout）必须放在子命令 install 之前
+          pmbootstrap -y -j 2 -t 3600 --details-to-stdout install || {
             echo "=== 构建失败，输出日志尾部 ==="
             df -h
             tail -n 300 "$PMB_WORK/log.txt" || true
