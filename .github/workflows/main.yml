@@ -1,0 +1,153 @@
+name: Build pmOS bacon
+
+# 在 GitHub Actions 的 Ubuntu runner 上用 pmbootstrap 编译 postmarketOS 镜像
+# 编译产物：boot.img + rootfs(oneplus-bacon.img) + lk2nd.img
+# 下载后在 Windows 上用 fastboot 刷入即可，不需要本地 Linux 环境
+
+on:
+  workflow_dispatch:
+    inputs:
+      ui:
+        description: UI 选择（当服务器用选 console 或 none）
+        required: true
+        default: console
+        type: choice
+        options:
+          - console
+          - none
+          - phosh
+          - sxmo-dewm
+      extra_space:
+        description: 镜像额外空间 MB
+        required: true
+        default: "2048"
+      pmaports_branch:
+        description: pmaports 分支
+        required: true
+        default: master
+        type: choice
+        options:
+          - master
+          - main
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    env:
+      PMB_WORK: /home/runner/.local/var/pmbootstrap
+      PMB_CONFIG: /home/runner/.config/pmbootstrap_v3.cfg
+      PMAPORTS_DIR: ${{ github.workspace }}/pmaports
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 默认盘只有十几 G，预装的 dotnet/ghc/android 很占地方，先清掉
+      - name: Free disk
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          docker system prune -af || true
+          df -h
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            git python3 python3-pip python3-venv python3-setuptools python3-wheel \
+            build-essential bison flex bc cpio zip unzip xz-utils zstd kmod file rsync \
+            android-sdk-platform-tools qemu-user-static binfmt-support \
+            ca-certificates openssl kpartx util-linux parted e2fsprogs dosfstools \
+            findutils coreutils
+
+      - name: Clone pmbootstrap
+        run: |
+          git clone --depth=1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git
+          mkdir -p $HOME/.local/bin
+          ln -sf $PWD/pmbootstrap/pmbootstrap.py $HOME/.local/bin/pmbootstrap
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Clone pmaports
+        run: |
+          git clone --depth=1 --branch=${{ github.event.inputs.pmaports_branch }} \
+            https://gitlab.postmarketos.org/postmarketOS/pmaports.git "$PMAPORTS_DIR"
+          git -C "$PMAPORTS_DIR" log -1 --oneline
+
+      - name: Preflight (确认 bacon 设备包存在)
+        run: |
+          ls "$PMAPORTS_DIR/device/testing/" | grep -i bacon || echo "未找到 bacon 设备包，检查分支是否正确"
+          echo "--- deviceinfo ---"
+          cat "$PMAPORTS_DIR/device/testing/device-oneplus-bacon/deviceinfo" 2>/dev/null || true
+
+      - name: Config
+        run: |
+          mkdir -p $HOME/.config
+          cat > "$PMB_CONFIG" <<PMBCFG
+          [pmbootstrap]
+          aports = $PMAPORTS_DIR
+          work = $PMB_WORK
+          device = oneplus-bacon
+          ui = ${{ github.event.inputs.ui }}
+          user = user
+          extra_space = ${{ github.event.inputs.extra_space }}
+          ssh_keys = False
+          sudo_timer = False
+
+          [build_options]
+          cross = True
+          PMBCFG
+          mkdir -p "$PMB_WORK/cache_git"
+          ln -sfn "$PMAPORTS_DIR" "$PMB_WORK/cache_git/pmaports"
+          cat "$PMB_CONFIG"
+
+      - name: Init (non-interactive)
+        run: |
+          echo "8" > "$PMB_WORK/version" 2>/dev/null || true
+          yes "" | pmbootstrap -y init || true
+          pmbootstrap config ui ${{ github.event.inputs.ui }}
+          pmbootstrap status || true
+
+      - name: Build image
+        run: |
+          set -euxo pipefail
+          pmbootstrap -y -j 2 -t 3600 install --details-to-stdout || {
+            echo "=== 构建失败，输出日志尾部 ==="
+            df -h
+            tail -n 300 "$PMB_WORK/log.txt" || true
+            exit 1
+          }
+
+      - name: Export images
+        run: |
+          set -euxo pipefail
+          pmbootstrap export
+          mkdir -p out
+          if [ -d /tmp/postmarketOS-export ]; then
+            cp -av /tmp/postmarketOS-export/* out/ 2>/dev/null || true
+          fi
+          # 兜底：从 work 目录里捞
+          find "$PMB_WORK" -name "boot.img" -exec cp -av {} out/ \; 2>/dev/null || true
+          find "$PMB_WORK" -name "oneplus-bacon.img" -exec cp -av {} out/ \; 2>/dev/null || true
+          find "$PMB_WORK" -name "lk2nd.img" -exec cp -av {} out/ \; 2>/dev/null || true
+          ls -lh out/
+          tar -czf bacon-pmos.tar.gz -C out .
+          ls -lh bacon-pmos.tar.gz
+
+      # 免费账户 artifact 配额 500MB，镜像大的话改用 Release 上传
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bacon-pmos
+          path: bacon-pmos.tar.gz
+          retention-days: 7
+
+      # 如果 artifact 超限，把上面 Upload artifact 换成本步骤
+      # - name: Upload to release
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     tag_name: bacon-pmos-${{ github.run_number }}
+      #     files: bacon-pmos.tar.gz
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
