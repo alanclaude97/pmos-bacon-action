@@ -35,6 +35,11 @@ on:
           - v25.12
           - v24.12
 
+# 创建 Release 需要的写权限
+# 用的是 Actions 自动生成的 secrets.GITHUB_TOKEN，不需要自己申请 PAT
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build
@@ -191,13 +196,27 @@ jobs:
             /home/runner/.local/var/pmbootstrap/packages
           key: pmos-bacon-${{ github.run_id }}
 
+      # 产物走 Release 发布：单文件上限 2GB，比 artifact 的 500MB 配额宽松得多
+      - name: Publish release
+        env:
+          # 优先用仓库 Secret（如需跨仓库推送可自建 PMOS_RELEASE_TOKEN）
+          # 没有配 Secret 时自动回退到内置的 GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.PMOS_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          TAG="bacon-pmos-${{ github.run_number }}-$(date -u +%Y%m%d%H%M)"
+          SIZE=$(stat -c%s bacon-pmos.tar.gz)
+          SIZE_MB=$(( SIZE / 1024 / 1024 ))
+          gh release create "$TAG" bacon-pmos.tar.gz \
+            --repo "${{ github.repository }}" \
+            --title "pmOS bacon 镜像 $TAG" \
+            --notes "设备 oneplus-bacon (armv7) / UI ${{ github.event.inputs.ui }} / 包体 ${SIZE_MB} MB / 由 Actions run ${{ github.run_number }} 自动生成"
+          echo "已发布: https://github.com/${{ github.repository }}/releases/tag/$TAG"
 
-
-      # 如果 artifact 超限，把上面 Upload artifact 换成本步骤
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: bacon-pmos-${{ github.run_number }}
-          files: bacon-pmos.tar.gz
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 如需同时保留 artifact（小体积时方便），取消下面注释即可
+      # - name: Upload artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: bacon-pmos
+      #     path: bacon-pmos.tar.gz
+      #     retention-days: 7
